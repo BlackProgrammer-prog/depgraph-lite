@@ -1,0 +1,60 @@
+{
+  "name": "depgraph-lite",
+  "version": "1.0.0",
+  "description": "A lightweight dependency graph analyzer for JavaScript and TypeScript projects.",
+  "keywords": [
+    "dependency-graph",
+    "circular-dependencies",
+    "typescript",
+    "static-analysis",
+    "cli"
+  ],
+  "license": "MIT",
+  "author": "Parham Azizi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BlackProgrammer-prog/depgraph-lite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/BlackProgrammer-prog/depgraph-lite/issues"
+  },
+  "homepage": "https://github.com/BlackProgrammer-prog/depgraph-lite#readme",
+  "type": "module",
+  "bin": {
+    "depgraph-lite": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node scripts/make-executable.mjs",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run check && npm test && npm run build"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@vitest/coverage-v8": "^3.2.7",
+    "typescript": "^5.7.2",
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "@babel/parser": "^7.29.8"
+  }
+}
