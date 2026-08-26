@@ -6,7 +6,7 @@ export default defineConfig({
       provider: "v8",
       reporter: ["text", "html"],
       include: ["src/**/*.ts"],
-      exclude: ["src/cli.ts", "src/report/html.ts", "src/types.ts"]
+      exclude: ["src/cli/cli.ts", "src/reporters/html.ts", "src/shared/types.ts"]
     }
   }
 });
