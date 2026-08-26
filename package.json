@@ -1,6 +1,6 @@
 {
   "name": "depgraph-lite",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "description": "A lightweight dependency graph analyzer for JavaScript and TypeScript projects.",
   "keywords": [
     "dependency-graph",
@@ -21,7 +21,7 @@
   "homepage": "https://github.com/BlackProgrammer-prog/depgraph-lite#readme",
   "type": "module",
   "bin": {
-    "depgraph-lite": "dist/cli.js"
+    "depgraph-lite": "dist/cli/cli.js"
   },
   "exports": {
     ".": {
@@ -35,15 +35,16 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/make-executable.mjs",
-    "check": "tsc --noEmit",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json && node scripts/make-executable.mjs",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "prepublishOnly": "npm run check && npm test && npm run build"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20"
   },
   "publishConfig": {
     "access": "public"
