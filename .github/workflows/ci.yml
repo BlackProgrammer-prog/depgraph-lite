@@ -25,3 +25,13 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      - name: Test the installable package
+        shell: bash
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/package-test"
+          cd "$RUNNER_TEMP/package-test"
+          npm init --yes
+          npm install "$RUNNER_TEMP/depgraph-lite-0.1.0.tgz"
+          npx --no-install depgraph-lite "$GITHUB_WORKSPACE/test/fixtures/basic" --json > "$RUNNER_TEMP/report.json"
+          node -e "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))" "$RUNNER_TEMP/report.json"
