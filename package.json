@@ -11,6 +11,7 @@
   ],
   "license": "MIT",
   "author": "Parham Azizi",
+  "sideEffects": false,
   "repository": {
     "type": "git",
     "url": "git+https://github.com/BlackProgrammer-prog/depgraph-lite.git"
@@ -20,6 +21,8 @@
   },
   "homepage": "https://github.com/BlackProgrammer-prog/depgraph-lite#readme",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "depgraph-lite": "dist/cli/cli.js"
   },
@@ -46,6 +49,7 @@
   "engines": {
     "node": ">=20"
   },
+  "packageManager": "npm@10.9.2",
   "publishConfig": {
     "access": "public"
   },
