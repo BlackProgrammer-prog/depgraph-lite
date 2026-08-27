@@ -23,6 +23,13 @@ Options:
       --no-color            disable terminal colors
   -h, --help                show this help
   -v, --version             show the installed version
+
+The path is resolved from your current terminal directory.
+
+Examples:
+  depgraph-lite ./src
+  depgraph-lite ../another-project/src --html report.html
+  depgraph-lite . --ignore "dist/**" --fail-on-cycle
 `;
 
 async function run(): Promise<void> {
