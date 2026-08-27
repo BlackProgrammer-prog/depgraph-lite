@@ -31,4 +31,10 @@ describe("reporters", () => {
     expect(report).not.toContain("<unsafe>");
     expect(report).not.toContain("https://");
   });
+
+  it("explains an empty single-file graph", async () => {
+    const result = await analyzeProject({ root: path.resolve("test/fixtures/discovery/source.ts") });
+    expect(generateTerminalReport(result, false)).toContain("Only one source file was analyzed.");
+    expect(generateHtmlReport(result)).toContain("Only one source file was analyzed.");
+  });
 });

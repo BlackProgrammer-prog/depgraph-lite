@@ -37,6 +37,14 @@ export function generateTerminalReport(result: AnalysisResult, useColor = true):
     metric("Circular dependencies", metrics.circularDependencies)
   ];
 
+  if (metrics.files === 1 && metrics.edges === 0) {
+    lines.push(
+      "",
+      paint.yellow("Only one source file was analyzed."),
+      "Dependency graphs become useful when the target contains multiple modules with import/export or require() links."
+    );
+  }
+
   if (hotspots.length > 0) {
     lines.push("", "Most depended-on modules", "");
     hotspots.forEach((node) => lines.push(`${String(node.inDegree).padStart(4)}  ${node.id}`));
