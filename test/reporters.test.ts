@@ -32,6 +32,32 @@ describe("reporters", () => {
     expect(report).not.toContain("https://");
   });
 
+  it("includes interactive graph controls without external assets", async () => {
+    const result = await analyzeProject({ root: path.resolve("test/fixtures/cycle") });
+    const report = generateHtmlReport(result);
+    expect(report).toContain('id="search"');
+    expect(report).toContain('data-filter="cycle"');
+    expect(report).toContain('id="zoom-in"');
+    expect(report).toContain('id="graph-data"');
+    expect(report).toContain('class="node cycle"');
+    expect(report).not.toContain("<link");
+    expect(report).not.toContain("<script src=");
+  });
+
+  it("escapes module ids in both markup and embedded graph data", async () => {
+    const result = await analyzeProject({ root: path.resolve("test/fixtures/basic") });
+    const firstNode = result.graph.nodes.values().next().value;
+    expect(firstNode).toBeDefined();
+    if (!firstNode) return;
+    result.graph.nodes.delete(firstNode.id);
+    firstNode.id = "</script><script>alert(1)</script>";
+    firstNode.path = firstNode.id;
+    result.graph.nodes.set(firstNode.id, firstNode);
+    const report = generateHtmlReport(result);
+    expect(report).not.toContain("</script><script>alert(1)</script>");
+    expect(report).toContain("\\u003c/script>");
+  });
+
   it("explains an empty single-file graph", async () => {
     const result = await analyzeProject({ root: path.resolve("test/fixtures/discovery/source.ts") });
     expect(generateTerminalReport(result, false)).toContain("Only one source file was analyzed.");
