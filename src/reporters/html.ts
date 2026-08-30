@@ -1,61 +1,113 @@
 import { HTML_GRAPH_NODE_LIMIT } from "../shared/constants.js";
-import type { AnalysisResult, ModuleNode } from "../shared/types.js";
+import type { AnalysisResult, DependencyEdge, ModuleNode } from "../shared/types.js";
 
 function escapeHtml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
+function safeJson(value: unknown): string {
+  return JSON.stringify(value).replaceAll("<", "\\u003c").replaceAll("\u2028", "\\u2028").replaceAll("\u2029", "\\u2029");
+}
+
+function labelParts(id: string): [string, string] {
+  const parts = id.split("/");
+  return [parts.at(-1) ?? id, parts.slice(-3, -1).join("/") || "project root"];
+}
+
+function layoutNodes(nodes: ModuleNode[], edges: DependencyEdge[]): { width: number; height: number; positions: Map<string, { x: number; y: number }> } {
+  const ids = new Set(nodes.map((node) => node.id));
+  const next = new Map(nodes.map((node) => [node.id, [] as string[]]));
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  for (const edge of edges) {
+    if (!ids.has(edge.from) || !ids.has(edge.to)) continue;
+    next.get(edge.from)?.push(edge.to);
+    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+  }
+  const level = new Map<string, number>();
+  const queue = nodes.filter((node) => incoming.get(node.id) === 0).map((node) => node.id).sort();
+  queue.forEach((id) => level.set(id, 0));
+  for (let index = 0; index < queue.length; index += 1) {
+    const id = queue[index];
+    if (!id) continue;
+    for (const dependency of next.get(id) ?? []) {
+      level.set(dependency, Math.max(level.get(dependency) ?? 0, (level.get(id) ?? 0) + 1));
+      const count = (incoming.get(dependency) ?? 1) - 1;
+      incoming.set(dependency, count);
+      if (count === 0) queue.push(dependency);
+    }
+  }
+  const lastLevel = Math.max(0, ...level.values());
+  nodes.forEach((node) => level.set(node.id, Math.min(6, level.get(node.id) ?? lastLevel + 1)));
+  const columns = new Map<number, ModuleNode[]>();
+  for (const node of nodes) {
+    const key = level.get(node.id) ?? 0;
+    columns.set(key, [...(columns.get(key) ?? []), node]);
+  }
+  columns.forEach((column) => column.sort((a, b) => b.inDegree - a.inDegree || a.id.localeCompare(b.id)));
+  const columnCount = Math.max(1, ...columns.keys()) + 1;
+  const longest = Math.max(1, ...[...columns.values()].map((column) => column.length));
+  const width = Math.max(920, 150 + columnCount * 220);
+  const height = Math.max(540, 100 + longest * 78);
+  const positions = new Map<string, { x: number; y: number }>();
+  columns.forEach((column, columnIndex) => {
+    const x = columnCount === 1 ? width / 2 : 90 + columnIndex * ((width - 180) / (columnCount - 1));
+    const gap = Math.min(78, (height - 100) / Math.max(1, column.length));
+    const start = (height - gap * (column.length - 1)) / 2;
+    column.forEach((node, index) => positions.set(node.id, { x, y: start + index * gap }));
+  });
+  return { width, height, positions };
+}
+
 function renderGraph(result: AnalysisResult): string {
-  const nodes = [...result.graph.nodes.values()].slice(0, HTML_GRAPH_NODE_LIMIT);
-  if (nodes.length === 0) return "<p class=\"muted\">No source modules found.</p>";
+  const nodes = [...result.graph.nodes.values()]
+    .sort((a, b) => b.inDegree + b.outDegree - (a.inDegree + a.outDegree) || a.id.localeCompare(b.id))
+    .slice(0, HTML_GRAPH_NODE_LIMIT);
+  if (nodes.length === 0) return '<div class="empty"><b>No source modules found</b><span>Analyze a directory containing JavaScript or TypeScript files.</span></div>';
   const included = new Set(nodes.map((node) => node.id));
-  const width = 900;
-  const height = Math.max(480, Math.ceil(nodes.length / 10) * 90);
-  const columns = Math.min(10, Math.ceil(Math.sqrt(nodes.length * 1.8)));
-  const positions = new Map(nodes.map((node, index) => [node.id, {
-    x: 70 + (index % columns) * ((width - 140) / Math.max(1, columns - 1)),
-    y: 55 + Math.floor(index / columns) * 90
-  }]));
-  const cyclicNodes = new Set(result.cycles.flatMap((cycle) => cycle.nodes));
-  const edges = result.graph.edges.filter((edge) => included.has(edge.from) && included.has(edge.to)).map((edge) => {
-    const from = positions.get(edge.from);
-    const to = positions.get(edge.to);
+  const edges = result.graph.edges.filter((edge) => included.has(edge.from) && included.has(edge.to));
+  const cyclic = new Set(result.cycles.flatMap((cycle) => cycle.nodes));
+  const layout = layoutNodes(nodes, edges);
+  const edgeElements = edges.map((edge) => {
+    const from = layout.positions.get(edge.from);
+    const to = layout.positions.get(edge.to);
     if (!from || !to) return "";
-    return `<line x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" marker-end="url(#arrow)" />`;
+    const bend = Math.max(38, Math.abs(to.x - from.x) * 0.45);
+    return `<path class="edge" data-from="${escapeHtml(edge.from)}" data-to="${escapeHtml(edge.to)}" d="M${from.x + 66} ${from.y}C${from.x + bend} ${from.y} ${to.x - bend} ${to.y} ${to.x - 66} ${to.y}" marker-end="url(#arrow)"/>`;
   }).join("");
   const nodeElements = nodes.map((node) => {
-    const position = positions.get(node.id);
-    if (!position) return "";
-    const label = node.id.length > 24 ? `…${node.id.slice(-23)}` : node.id;
-    return `<g class="node${cyclicNodes.has(node.id) ? " cycle" : ""}"><circle cx="${position.x}" cy="${position.y}" r="22"/><title>${escapeHtml(node.id)}</title><text x="${position.x}" y="${position.y + 37}" text-anchor="middle">${escapeHtml(label)}</text></g>`;
+    const point = layout.positions.get(node.id);
+    if (!point) return "";
+    const [name, parent] = labelParts(node.id);
+    const visibleName = name.length > 18 ? `${name.slice(0, 16)}…` : name;
+    return `<g class="node${cyclic.has(node.id) ? " cycle" : ""}" data-id="${escapeHtml(node.id)}" transform="translate(${point.x} ${point.y})" tabindex="0" role="button" aria-label="${escapeHtml(node.id)}"><rect x="-66" y="-27" width="132" height="54" rx="10"/><circle cx="-51" cy="-15" r="3"/><text class="name" x="-42" y="-7">${escapeHtml(visibleName)}</text><text class="parent" x="-42" y="11">${escapeHtml(parent)}</text><title>${escapeHtml(node.id)}</title></g>`;
   }).join("");
   const notice = result.graph.nodes.size > HTML_GRAPH_NODE_LIMIT
-    ? `<p class="notice">Graph visualization limited to the first ${HTML_GRAPH_NODE_LIMIT} modules. Full statistics are shown below.</p>`
-    : "";
-  return `${notice}<div class="graph"><svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Module dependency graph"><defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="26" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z"/></marker></defs>${edges}${nodeElements}</svg></div>`;
+    ? `<aside class="limit"><b>Focused view</b> Showing the ${HTML_GRAPH_NODE_LIMIT} most-connected of ${result.graph.nodes.size} modules.</aside>` : "";
+  const graphData = safeJson({
+    nodes: nodes.map((node) => ({ id: node.id, inDegree: node.inDegree, outDegree: node.outDegree, external: node.externalDependencies.length, cycle: cyclic.has(node.id) }))
+  });
+  return `${notice}<div class="graph-shell"><div class="toolbar"><label class="search"><span>⌕</span><input id="search" type="search" placeholder="Find a module…" aria-label="Find a module" autocomplete="off"></label><div class="filters"><button class="active" data-filter="all">All <i>${nodes.length}</i></button><button data-filter="cycle">Cycles <i>${nodes.filter((node) => cyclic.has(node.id)).length}</i></button></div><div class="zoom"><button id="zoom-out" aria-label="Zoom out">−</button><button id="reset">100%</button><button id="zoom-in" aria-label="Zoom in">+</button></div></div><div class="stage" id="stage"><svg id="graph" viewBox="0 0 ${layout.width} ${layout.height}" role="img" aria-label="Interactive dependency graph"><defs><marker id="arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto"><path d="M0 0 7 3.5 0 7Z"/></marker><pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24"/></pattern></defs><rect class="grid" width="100%" height="100%"/><g id="viewport">${edgeElements}${nodeElements}</g></svg><small>Drag to pan · Scroll to zoom · Select a module to trace links</small><div class="no-results" hidden>No matching modules</div></div><aside class="inspector"><div><em>Module inspector</em><b id="panel-title">Select a module</b><span id="panel-path">Click a node to inspect its direct relationships.</span></div><dl><div><dt id="panel-in">—</dt><dd>Imported by</dd></div><div><dt id="panel-out">—</dt><dd>Imports</dd></div><div><dt id="panel-external">—</dt><dd>Packages</dd></div></dl><button id="clear" hidden>Clear</button></aside></div><script type="application/json" id="graph-data">${graphData}</script>`;
 }
 
 function hotspotRows(nodes: ModuleNode[]): string {
-  return nodes
-    .sort((left, right) => right.inDegree - left.inDegree || right.outDegree - left.outDegree || left.id.localeCompare(right.id))
-    .slice(0, 20)
-    .map((node) => `<tr><td><code>${escapeHtml(node.id)}</code></td><td>${node.inDegree}</td><td>${node.outDegree}</td><td>${node.externalDependencies.length}</td></tr>`)
-    .join("");
+  return nodes.sort((a, b) => b.inDegree - a.inDegree || b.outDegree - a.outDegree || a.id.localeCompare(b.id)).slice(0, 20)
+    .map((node, index) => `<tr><td><i>${index + 1}</i><code title="${escapeHtml(node.id)}">${escapeHtml(node.id)}</code></td><td><mark>${node.inDegree}</mark></td><td>${node.outDegree}</td><td>${node.externalDependencies.length}</td></tr>`).join("");
 }
 
 export function generateHtmlReport(result: AnalysisResult): string {
-  const metrics = [
-    ["Files", result.metrics.files], ["Dependencies", result.metrics.edges],
-    ["External packages", result.metrics.externalPackages], ["Circular dependencies", result.metrics.circularDependencies]
+  const metrics: Array<[string, number, string]> = [
+    ["Files", result.metrics.files, "modules"], ["Dependencies", result.metrics.edges, "internal links"],
+    ["External packages", result.metrics.externalPackages, "third-party"], ["Circular dependencies", result.metrics.circularDependencies, result.metrics.circularDependencies ? "needs attention" : "healthy"]
   ];
-  const cycles = result.cycles.length > 0
-    ? result.cycles.map((cycle, index) => `<article class="cycle-card"><strong>Cycle ${index + 1}</strong>${cycle.nodes.map((node) => `<code>${escapeHtml(node)}</code>`).join("<span>↓</span>")}</article>`).join("")
-    : "<p class=\"healthy\">No circular dependencies found.</p>";
-  const cards = metrics.map(([label, value]) => `<article><strong>${value}</strong><span>${label}</span></article>`).join("");
-  const singleFileNotice = result.metrics.files === 1 && result.metrics.edges === 0
-    ? `<aside class="notice"><strong>Only one source file was analyzed.</strong><br>Choose a source directory containing multiple modules with import/export or require() links to build a useful dependency graph.</aside>`
-    : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DepGraph Lite report</title><style>
-:root{color-scheme:dark;--bg:#0b1020;--panel:#141b2d;--muted:#91a0bd;--line:#293654;--accent:#67e8f9;--ok:#86efac;--danger:#fb7185}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#edf2ff;font:15px/1.6 ui-sans-serif,system-ui,sans-serif}main{width:min(1100px,calc(100% - 32px));margin:48px auto}h1{margin:0;font-size:30px}header p,.muted{color:var(--muted);margin:3px 0}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:28px 0}.cards article,section,.cycle-card{background:var(--panel);border:1px solid var(--line);border-radius:12px}.cards article{padding:18px}.cards strong{display:block;color:var(--accent);font-size:25px}.cards span{color:var(--muted)}section{padding:20px;margin-top:18px;overflow:hidden}h2{font-size:18px;margin:0 0 14px}.graph{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#0d1426}.graph svg{display:block;min-width:760px}line{stroke:#435171;stroke-width:1.2}marker path{fill:#607092}.node circle{fill:#273451;stroke:#7583a3}.node.cycle circle{fill:#4c2132;stroke:var(--danger);stroke-width:2}.node text{fill:#cbd5e1;font-size:10px}.healthy{color:var(--ok)}.notice{color:#facc15;background:#302a16;border:1px solid #6b5c1e;border-radius:10px;padding:14px 18px}.cycles{display:grid;gap:10px}.cycle-card{display:flex;flex-direction:column;padding:14px}.cycle-card span{color:var(--danger);padding-left:12px}code{color:#c4b5fd}table{width:100%;border-collapse:collapse}th,td{text-align:left;border-bottom:1px solid var(--line);padding:9px}th{color:var(--muted);font-weight:500}@media(max-width:650px){.cards{grid-template-columns:1fr 1fr}main{margin-top:24px}}
-</style></head><body><main><header><h1>DepGraph Lite</h1><p>${escapeHtml(result.root)}</p><p>Analyzed in ${result.durationMs} ms</p></header><div class="cards">${cards}</div>${singleFileNotice}<section><h2>Dependency graph</h2>${renderGraph(result)}</section><section><h2>Hotspot modules</h2><table><thead><tr><th>Module</th><th>Imported by</th><th>Imports</th><th>Packages</th></tr></thead><tbody>${hotspotRows([...result.graph.nodes.values()])}</tbody></table></section><section><h2>Circular dependencies</h2><div class="cycles">${cycles}</div></section><section><h2>Project statistics</h2><p>Entry points: <strong>${result.metrics.entryPoints}</strong> · Leaf modules: <strong>${result.metrics.leafModules}</strong> · Maximum fan-in: <strong>${result.metrics.maxDependents}</strong> · Maximum fan-out: <strong>${result.metrics.maxDependencies}</strong></p></section></main></body></html>`;
+  const cycles = result.cycles.length
+    ? result.cycles.map((cycle, index) => `<article class="cycle-card"><i>${index + 1}</i><div><b>Dependency loop</b><p>${cycle.nodes.map((node, position) => `<code>${escapeHtml(node)}</code>${position < cycle.nodes.length - 1 ? "<span>→</span>" : ""}`).join("")}</p></div></article>`).join("")
+    : '<div class="healthy"><i>✓</i><div><b>No circular dependencies</b><span>The analyzed module graph is free of dependency loops.</span></div></div>';
+  const cards = metrics.map(([label, value, note]) => `<article><span>${label}</span><b>${value}</b><small>${note}</small></article>`).join("");
+  const singleFile = result.metrics.files === 1 && result.metrics.edges === 0 ? '<aside class="notice"><b>Only one source file was analyzed.</b><span>Choose a directory with multiple linked modules to build a useful graph.</span></aside>' : "";
+  const hasCycles = result.metrics.circularDependencies > 0;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>DepGraph Lite report</title><style>
+:root{color-scheme:dark;--bg:#080c16;--panel:#101827;--panel2:#151f31;--text:#eef4ff;--muted:#8d9ab1;--subtle:#65728a;--line:#263249;--accent:#70e1d1;--blue:#69a7ff;--ok:#66d9a3;--danger:#ff7085;--warn:#ffc65c}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 8% 0%,#142641 0,transparent 30%),var(--bg);color:var(--text);font:14px/1.55 Inter,ui-sans-serif,system-ui,sans-serif}button,input{font:inherit;color:inherit}main{width:min(1240px,calc(100% - 40px));margin:auto;padding-bottom:60px}.hero{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;padding:50px 0 28px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:18px;color:var(--accent);font-weight:750}.logo{display:grid;place-items:center;width:30px;height:30px;border:1px solid #345c5b;border-radius:9px;background:#102b2c}h1{margin:0;font-size:clamp(28px,4vw,42px);line-height:1.1;letter-spacing:-.04em}.hero p{margin:9px 0 0;color:var(--muted)}.meta{display:grid;justify-items:end;gap:8px;color:var(--muted);white-space:nowrap}.status{padding:7px 11px;border:1px solid var(--line);border-radius:99px;background:#0e1726;color:var(--text);font-size:12px;font-weight:700}.status:before{content:"";display:inline-block;width:7px;height:7px;margin-right:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px #66d9a31a}.status.warn:before{background:var(--warn)}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.cards article,section,.notice{border:1px solid var(--line);border-radius:14px;background:linear-gradient(145deg,#141e2f,#0e1523)}.cards article{min-height:130px;padding:20px}.cards span,.cards small{display:block;color:var(--muted)}.cards b{display:block;margin:8px 0 3px;font-size:32px;line-height:1}.cards small{color:var(--subtle)}section{margin-top:18px;overflow:hidden}.section-head{padding:19px 21px;border-bottom:1px solid var(--line)}.section-head em,.inspector em{display:block;color:var(--accent);font-size:10px;font-style:normal;font-weight:800;letter-spacing:.14em;text-transform:uppercase}.section-head h2{margin:3px 0 0;font-size:17px}.section-head p{margin:3px 0 0;color:var(--muted);font-size:12px}.notice,.limit{display:flex;gap:9px;margin:15px 15px 0;padding:11px 13px;border:1px solid #6d562e;border-radius:9px;background:#2d2415;color:#d7c18b}.notice{margin-top:18px}.notice span{color:var(--muted)}.graph-shell{margin:15px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:#090f1a;box-shadow:0 20px 50px #0005}.toolbar{display:flex;align-items:center;gap:9px;min-height:55px;padding:9px 11px;border-bottom:1px solid var(--line);background:#101827}.search{display:flex;align-items:center;gap:7px;max-width:410px;min-width:220px;flex:1;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}.search:focus-within{border-color:var(--blue);box-shadow:0 0 0 3px #69a7ff18}.search span{color:var(--muted);font-size:20px}.search input{width:100%;height:34px;border:0;outline:0;background:none}.filters{display:flex;padding:3px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}.filters button{padding:5px 9px;border:0;border-radius:5px;background:none;color:var(--muted);cursor:pointer;font-size:12px}.filters button.active{background:#1b273a;color:var(--text)}.filters i{margin-left:3px;color:var(--subtle);font-style:normal}.zoom{display:flex;margin-left:auto}.zoom button,.inspector>button{height:32px;border:1px solid var(--line);background:var(--panel);cursor:pointer}.zoom button{min-width:32px}.zoom #reset{min-width:56px;color:var(--muted);font-size:11px}.zoom button:hover,.inspector>button:hover{background:var(--panel2);border-color:#3b4a66}.stage{position:relative;height:min(66vh,660px);min-height:480px;overflow:hidden;background:#090f1a;cursor:grab;touch-action:none}.stage.dragging{cursor:grabbing}.stage svg{display:block;width:100%;height:100%;user-select:none}.grid{fill:url(#grid)}pattern path{fill:none;stroke:#172033}.edge{fill:none;stroke:#3c4a61;stroke-width:1.15;opacity:.6;transition:.15s}.edge.related{stroke:var(--blue);stroke-width:2;opacity:1}.edge.muted{opacity:.055}.node{cursor:pointer;outline:0;transition:opacity .15s}.node rect{fill:#151f31;stroke:#34425b;vector-effect:non-scaling-stroke;transition:.15s}.node:hover rect,.node:focus rect{fill:#1c2940;stroke:#7891b8}.node circle{fill:#657590}.node.cycle rect{fill:#2b1c29;stroke:#8c4052}.node.cycle circle{fill:var(--danger)}.node.selected rect{fill:#15343a;stroke:var(--accent);stroke-width:2}.node.related rect{stroke:var(--blue);stroke-width:1.5}.node.muted{opacity:.11}.node text.name{fill:var(--text);font-size:10px;font-weight:700}.node text.parent{fill:#7f8ba3;font-size:8px}.stage>small{position:absolute;left:11px;bottom:11px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:#080c16dd;color:var(--subtle);pointer-events:none}.no-results{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:9px 13px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--muted)}.inspector{display:flex;align-items:center;gap:24px;min-height:80px;padding:13px 16px;border-top:1px solid var(--line);background:var(--panel)}.inspector>div:first-child{min-width:0;flex:1}.inspector b,.inspector span{display:block}.inspector span{overflow:hidden;color:var(--muted);font-size:12px;text-overflow:ellipsis;white-space:nowrap}.inspector dl{display:flex;gap:22px;margin:0}.inspector dl div{text-align:left}.inspector dt{font-size:17px;font-weight:700}.inspector dd{margin:0;color:var(--muted);font-size:9px;text-transform:uppercase}.inspector>button{border-radius:7px;font-size:11px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse}th,td{padding:11px 20px;border-bottom:1px solid var(--line);text-align:left}th{color:var(--muted);font-size:10px;text-transform:uppercase}tbody tr:hover{background:#69a7ff0a}td:first-child{display:flex;align-items:center;gap:10px;max-width:720px}td i,.cycle-card>i{display:grid;place-items:center;flex:0 0 24px;height:24px;border:1px solid var(--line);border-radius:6px;color:var(--subtle);font-size:10px;font-style:normal}td code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}mark{display:inline-block;min-width:28px;padding:2px 7px;border-radius:99px;background:#70e1d119;color:var(--accent);text-align:center}code{color:#bdcce6;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.cycles{display:grid;gap:9px;padding:15px}.cycle-card{display:flex;gap:13px;padding:13px;border:1px solid #ff70852c;border-radius:10px;background:#ff70850b}.cycle-card>i{border:0;background:#ff70851c;color:var(--danger)}.cycle-card p{display:flex;flex-wrap:wrap;gap:7px;margin:7px 0 0}.cycle-card p span{color:var(--danger)}.healthy{display:flex;align-items:center;gap:12px;margin:15px;padding:15px;border:1px solid #66d9a32b;border-radius:10px;background:#66d9a30c}.healthy>i{display:grid;place-items:center;width:32px;height:32px;border-radius:50%;background:#66d9a31d;color:var(--ok);font-style:normal}.healthy span{display:block;color:var(--muted);font-size:12px}.stats{display:grid;grid-template-columns:repeat(4,1fr);padding:7px 15px 17px}.stats div{padding:13px}.stats span{display:block;color:var(--muted);font-size:11px}.stats b{font-size:20px}.empty{display:grid;gap:4px;place-items:center;padding:70px;text-align:center}.empty span{color:var(--muted)}@media(max-width:760px){main{width:calc(100% - 24px)}.hero{align-items:flex-start;flex-direction:column;padding-top:30px}.meta{justify-items:start}.cards{grid-template-columns:1fr 1fr}.toolbar{flex-wrap:wrap}.search{max-width:none}.filters{order:3;width:100%}.filters button{flex:1}.inspector{align-items:flex-start;flex-wrap:wrap}.inspector dl{order:3;width:100%}.stats{grid-template-columns:1fr 1fr}}@media(max-width:430px){.cards{grid-template-columns:1fr}.stage{min-height:420px}.stage>small{display:none}}
+</style></head><body><main><header class="hero"><div><div class="brand"><span class="logo">◇</span>DepGraph Lite</div><h1>Dependency overview</h1><p>${escapeHtml(result.root)}</p></div><div class="meta"><span class="status${hasCycles ? " warn" : ""}">${hasCycles ? `${result.metrics.circularDependencies} cycle${result.metrics.circularDependencies === 1 ? "" : "s"} detected` : "Healthy graph"}</span><span>Analyzed in ${result.durationMs} ms</span></div></header><div class="cards">${cards}</div>${singleFile}<section><div class="section-head"><em>Explore</em><h2>Dependency graph</h2><p>Search, filter, and trace module relationships.</p></div>${renderGraph(result)}</section><section><div class="section-head"><em>Coupling</em><h2>Hotspot modules</h2><p>Modules with the highest incoming dependency count.</p></div><div class="table-wrap"><table><thead><tr><th>Module</th><th>Imported by</th><th>Imports</th><th>Packages</th></tr></thead><tbody>${hotspotRows([...result.graph.nodes.values()])}</tbody></table></div></section><section><div class="section-head"><em>Health</em><h2>Circular dependencies</h2><p>Loops that can make modules harder to change and test.</p></div><div class="cycles">${cycles}</div></section><section><div class="section-head"><em>Summary</em><h2>Project statistics</h2></div><div class="stats"><div><span>Entry points</span><b>${result.metrics.entryPoints}</b></div><div><span>Leaf modules</span><b>${result.metrics.leafModules}</b></div><div><span>Maximum fan-in</span><b>${result.metrics.maxDependents}</b></div><div><span>Maximum fan-out</span><b>${result.metrics.maxDependencies}</b></div></div></section></main><script>
+(()=>{const source=document.getElementById("graph-data");if(!source)return;const data=JSON.parse(source.textContent||"{}");const svg=document.getElementById("graph"),viewport=document.getElementById("viewport"),stage=document.getElementById("stage");if(!svg||!viewport||!stage)return;const nodes=new Map(data.nodes.map(n=>[n.id,n])),elements=new Map([...viewport.querySelectorAll(".node")].map(el=>[el.dataset.id,el])),edges=[...viewport.querySelectorAll(".edge")];let scale=1,tx=0,ty=0,drag=null,filter="all",selected=false;const apply=()=>{viewport.setAttribute("transform","translate("+tx+" "+ty+") scale("+scale+")");document.getElementById("reset").textContent=Math.round(scale*100)+"%"};const zoom=(next,cx=svg.clientWidth/2,cy=svg.clientHeight/2)=>{const r=svg.getBoundingClientRect(),px=(cx-r.left-tx)/scale,py=(cy-r.top-ty)/scale,newScale=Math.min(2.8,Math.max(.35,next));tx=cx-r.left-px*newScale;ty=cy-r.top-py*newScale;scale=newScale;apply()};const refresh=()=>{const query=document.getElementById("search").value.trim().toLowerCase();let visible=0;elements.forEach((el,id)=>{const show=(!query||id.toLowerCase().includes(query))&&(filter!=="cycle"||nodes.get(id).cycle);el.classList.toggle("muted",!show);if(show)visible++});document.querySelector(".no-results").hidden=visible>0;edges.forEach(edge=>edge.classList.toggle("muted",elements.get(edge.dataset.from)?.classList.contains("muted")||elements.get(edge.dataset.to)?.classList.contains("muted")))};const clear=()=>{selected=false;elements.forEach(el=>el.classList.remove("selected","related"));edges.forEach(el=>el.classList.remove("related"));document.getElementById("panel-title").textContent="Select a module";document.getElementById("panel-path").textContent="Click a node to inspect its direct relationships.";["panel-in","panel-out","panel-external"].forEach(id=>document.getElementById(id).textContent="—");document.getElementById("clear").hidden=true;refresh()};const select=id=>{selected=true;const node=nodes.get(id),related=new Set([id]);edges.forEach(edge=>{const match=edge.dataset.from===id||edge.dataset.to===id;edge.classList.toggle("related",match);edge.classList.toggle("muted",!match);if(match){related.add(edge.dataset.from);related.add(edge.dataset.to)}});elements.forEach((el,key)=>{el.classList.toggle("selected",key===id);el.classList.toggle("related",key!==id&&related.has(key));el.classList.toggle("muted",!related.has(key))});document.getElementById("panel-title").textContent=node.cycle?"Cycle member":"Module details";document.getElementById("panel-path").textContent=id;document.getElementById("panel-in").textContent=node.inDegree;document.getElementById("panel-out").textContent=node.outDegree;document.getElementById("panel-external").textContent=node.external;document.getElementById("clear").hidden=false};viewport.addEventListener("click",event=>{const node=event.target.closest?.(".node");if(node)select(node.dataset.id)});viewport.addEventListener("keydown",event=>{if((event.key==="Enter"||event.key===" ")&&event.target.matches(".node")){event.preventDefault();select(event.target.dataset.id)}});document.getElementById("search").addEventListener("input",()=>{if(selected)clear();refresh()});document.querySelectorAll(".filters button").forEach(button=>button.addEventListener("click",()=>{document.querySelectorAll(".filters button").forEach(item=>item.classList.toggle("active",item===button));filter=button.dataset.filter;if(selected)clear();refresh()}));document.getElementById("clear").addEventListener("click",clear);document.getElementById("zoom-in").addEventListener("click",()=>zoom(scale*1.2));document.getElementById("zoom-out").addEventListener("click",()=>zoom(scale/1.2));document.getElementById("reset").addEventListener("click",()=>{scale=1;tx=0;ty=0;apply()});stage.addEventListener("wheel",event=>{event.preventDefault();zoom(scale*(event.deltaY>0?.9:1.1),event.clientX,event.clientY)},{passive:false});stage.addEventListener("pointerdown",event=>{if(event.target.closest?.(".node"))return;drag={x:event.clientX,y:event.clientY,tx,ty};stage.setPointerCapture(event.pointerId);stage.classList.add("dragging")});stage.addEventListener("pointermove",event=>{if(!drag)return;tx=drag.tx+event.clientX-drag.x;ty=drag.ty+event.clientY-drag.y;apply()});stage.addEventListener("pointerup",()=>{drag=null;stage.classList.remove("dragging")});apply()})();
+</script></body></html>`;
 }
